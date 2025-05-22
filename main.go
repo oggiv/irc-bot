@@ -19,8 +19,8 @@ const (
     UseTLS = true
 
     channel = "#go-irc-bot-test";
-    botname = "bot"
-    botident = "bot"
+    botname = "test-bot"
+    botident = "test-bot"
     prefix = "."
 
     UseSASL = true
@@ -272,11 +272,23 @@ func main() {
     // Do nothing (?) at the end of the nickname list
     irccon.AddCallback("366", func(e *irc.Event) {  })
 
-    // Handle commands
+    // Handle joins
+    irccon.AddCallback("JOIN", func(e *irc.Event) {
+        // If the bot is the one joining
+        if e.Nick == irccon.GetNick() {
+            // e.Arguments[0] contains the channel name
+            irccon.Privmsg(e.Arguments[0], fmt.Sprintf("%s", irccon.GetNick()))
+        }
+    })
+
+    // Handle messages
     irccon.AddCallback("PRIVMSG", func(e *irc.Event) {
-        // Only respond to channel messages (not private messages)
-        if !strings.HasPrefix(e.Arguments[0], "#") {
-            // Skip messages that aren't from a channel
+        
+        eChannel := e.Arguments[0]
+        eMessage := e.Message()
+
+        // Skip messages that aren't from a channel
+        if !strings.HasPrefix(eChannel, "#") {
             return
         }
 
@@ -287,9 +299,19 @@ func main() {
             ON CONFLICT(nickname, channel) DO UPDATE SET
                 last_message = excluded.last_message,
                 last_seen = excluded.last_seen
-        `, e.Nick, e.Arguments[0], e.Message())
+        `, e.Nick, eChannel, eMessage)
         if err != nil {
             log.Printf("Error updating user activity: %v", err)
+        }
+
+        // Don't respond to itself
+        if e.Nick == irccon.GetNick() {
+            return
+        }
+
+        // Reply to mentions
+        if strings.Contains(strings.ToLower(eMessage), strings.ToLower(irccon.GetNick())) {
+            irccon.Privmsg(eChannel, irccon.GetNick())
         }
 
         // Check for pending tell messages
@@ -304,7 +326,7 @@ func main() {
             SELECT id, sender, message, created_at 
             FROM tell_messages 
             WHERE recipient = ? AND channel = ? AND delivered = FALSE
-        `, e.Nick, e.Arguments[0])
+        `, e.Nick, eChannel)
         if err != nil {
             log.Printf("Error querying tell messages: %v", err)
         } else {
@@ -329,7 +351,7 @@ func main() {
             // Deliver messages and mark as delivered
             for _, msg := range messages {
                 // Deliver the message
-                irccon.Privmsg(e.Arguments[0], 
+                irccon.Privmsg(eChannel, 
                     fmt.Sprintf("%s: \"%s\" ~ %s [%s]", 
                         e.Nick, 
                         msg.message, 
@@ -349,7 +371,7 @@ func main() {
             }
         }
 
-        msg := strings.TrimSpace(e.Message())
+        msg := strings.TrimSpace(eMessage)
         if !strings.HasPrefix(msg, prefix) {
             // Skip messages that don't begin with the bot prefix
             return
