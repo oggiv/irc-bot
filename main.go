@@ -2,8 +2,11 @@ package main
 
 import (
         "crypto/tls"
+        "database/sql"
         "fmt"
+        "log"
         "strings"
+        _ "github.com/mattn/go-sqlite3"
         irc "github.com/thoj/go-ircevent"
 )
 
@@ -16,7 +19,12 @@ const (
         botname = "mega_test_bot"
         botident = "m_test_bot"
         prefix = "."
+
+        DBPath = "./irc-bot.db"
 )
+
+// Handler functions for commands
+type HandlerFunc func(e *irc.Event, irccon *irc.Connection, args []string)
 
 func echoHandler(e *irc.Event, irccon *irc.Connection, args []string) {
     if len(args) == 0 {
@@ -31,6 +39,30 @@ func helpHandler(e *irc.Event, irccon *irc.Connection, args []string) {
     irccon.Privmsg(e.Arguments[0], helpMsg)
 }
 
+func testHandler(db *sql.DB) HandlerFunc {
+        return func(e *irc.Event, irccon *irc.Connection, args []string) {
+                // Test connection
+                err := db.Ping()
+                if err != nil { log.Fatal(err) }
+                irccon.Privmsg(e.Arguments[0], "SQLite connected!")
+        }
+}
+
+// Database functions
+func initDB(path string) *sql.DB {
+        // Open DB and create one if needed
+        db, err := sql.Open("sqlite3", path)
+        
+        // If something goes wrong
+        if err != nil { log.Fatal(err) }
+
+        // Create a table if there isn't one
+        //_, err = db.Exec()
+
+        return db
+}
+
+// Main
 func main() {
         irccon := irc.IRC(botname, botident)
         irccon.VerboseCallbackHandler = true
@@ -41,10 +73,15 @@ func main() {
                 InsecureSkipVerify: false,
         }
 
+        // Database
+        db := initDB(DBPath)
+        defer db.Close()
+
         // Command map
         commands := map[string]func(*irc.Event, *irc.Connection, []string) {
                 "echo": echoHandler,
                 "help": helpHandler,
+                "test": testHandler(db),
         }
 
         // Join channel on connect
