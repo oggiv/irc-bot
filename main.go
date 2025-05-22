@@ -1,10 +1,12 @@
 package main
 
 import (
+    "bufio"
     "crypto/tls"
     "database/sql"
     "fmt"
     "log"
+    "os"
     "strings"
     "time"
     _ "github.com/mattn/go-sqlite3"
@@ -12,16 +14,20 @@ import (
 )
 
 const (
-    servername = "irc.rizon.net"
+    servername = "irc.libera.chat"
     serverport = "6697"
-    
-    channel = "#go-eventirc-test";
+    UseTLS = true
 
-    botname = "mega_test_bot"
-    botident = "m_test_bot"
+    channel = "#go-irc-bot-test";
+    botname = "bot"
+    botident = "bot"
     prefix = "."
 
-    DBPath = "./irc-bot.db"
+    UseSASL = true
+    SASLMech = "PLAIN"
+    SASLPath = "sasl.txt"
+
+    DBPath = "bot-data.db"
 )
 
 // Handler functions for commands
@@ -29,8 +35,8 @@ type HandlerFunc func(e *irc.Event, irccon *irc.Connection, args []string)
 
 func echoHandler(e *irc.Event, irccon *irc.Connection, args []string) {
     if len(args) == 0 {
-    irccon.Privmsg(e.Arguments[0], "Usage: .echo <message>")
-    return
+        irccon.Privmsg(e.Arguments[0], "Usage: .echo <message>")
+        return
     }
     irccon.Privmsg(e.Arguments[0], fmt.Sprintf("%s said: %s", e.Nick, strings.Join(args, " ")))
 }
@@ -163,15 +169,87 @@ func initDB(path string) *sql.DB {
     return db
 }
 
+// SASL helper functions
+type SASLCredentials struct {
+    Login    string
+    Password string
+}
+
+func readSASLCredentials(filename string) (SASLCredentials, error) {
+    file, err := os.Open(filename)
+    if err != nil {
+        return SASLCredentials{}, err
+    }
+    defer file.Close()
+
+    scanner := bufio.NewScanner(file)
+    var lines []string
+    for scanner.Scan() {
+        lines = append(lines, strings.TrimSpace(scanner.Text()))
+    }
+
+    if len(lines) < 2 {
+        return SASLCredentials{}, fmt.Errorf("invalid file format: need login and password on separate lines")
+    }
+
+    return SASLCredentials{
+        Login:    lines[0],
+        Password: lines[1],
+    }, nil
+}
+
+func promptSASLCredentials() SASLCredentials {
+    reader := bufio.NewReader(os.Stdin)
+
+    fmt.Print("Enter SASL login: ")
+    login, _ := reader.ReadString('\n')
+    login = strings.TrimSpace(login)
+
+    fmt.Print("Enter SASL password: ")
+    password, _ := reader.ReadString('\n')
+    password = strings.TrimSpace(password)
+
+    return SASLCredentials{
+        Login:    login,
+        Password: password,
+    }
+}
+
+func setupSASL(irccon *irc.Connection) {
+    creds, err := readSASLCredentials(SASLPath)
+    if err != nil {
+        log.Printf("Couldn't read SASL credentials from file (%v)", err)
+        creds = promptSASLCredentials()
+
+        // Optionally save for next time
+        if file, err := os.Create(SASLPath); err == nil {
+            defer file.Close()
+            fmt.Fprintf(file, "%s\n%s\n", creds.Login, creds.Password)
+            log.Println("Saved SASL credentials to", SASLPath)
+        } else {
+            log.Printf("Warning: couldn't save SASL credentials: %v", err)
+        }
+    }
+
+    // Configure SASL
+    irccon.SASLLogin = creds.Login
+    irccon.SASLPassword = creds.Password
+}
+
 // Main
 func main() {
     irccon := irc.IRC(botname, botident)
     irccon.VerboseCallbackHandler = true
-    irccon.Debug = true
-    irccon.UseTLS = true
+    irccon.Debug = false
+    irccon.UseTLS = UseTLS
     irccon.TLSConfig = &tls.Config{
         ServerName: servername,
         InsecureSkipVerify: false,
+    }
+    irccon.UseSASL = UseSASL
+    if UseSASL {
+        irccon.SASLMech = SASLMech
+        setupSASL(irccon)
     }
 
     // Database
@@ -191,7 +269,7 @@ func main() {
         irccon.Join(channel)
     })
 
-    // Do nothing (?) at the end of the nickname
+    // Do nothing (?) at the end of the nickname list
     irccon.AddCallback("366", func(e *irc.Event) {  })
 
     // Handle commands
