@@ -36,17 +36,8 @@ func echoHandler(e *irc.Event, irccon *irc.Connection, args []string) {
 }
 
 func helpHandler(e *irc.Event, irccon *irc.Connection, args []string) {
-    helpMsg := "Available commands: .echo, .help"
+    helpMsg := "Available commands: .echo, .help, .seen, .tell"
     irccon.Privmsg(e.Arguments[0], helpMsg)
-}
-
-func testHandler(db *sql.DB) HandlerFunc {
-    return func(e *irc.Event, irccon *irc.Connection, args []string) {
-        // Test connection
-        err := db.Ping()
-        if err != nil { log.Fatal("test cmd error:", err) }
-        irccon.Privmsg(e.Arguments[0], "SQLite connected!")
-    }
 }
 
 func seenHandler(db *sql.DB) HandlerFunc {
@@ -57,6 +48,7 @@ func seenHandler(db *sql.DB) HandlerFunc {
         }
 
         target := args[0]
+        channel := e.Arguments[0]
         var lastMessage string
         var lastSeen time.Time
 
@@ -67,22 +59,72 @@ func seenHandler(db *sql.DB) HandlerFunc {
             WHERE nickname = ? AND channel = ?
             ORDER BY last_seen DESC 
             LIMIT 1
-        `, target, e.Arguments[0]).Scan(&lastMessage, &lastSeen)
+        `, target, channel).Scan(&lastMessage, &lastSeen)
         
         if err == sql.ErrNoRows {
-            irccon.Privmsg(e.Arguments[0], fmt.Sprintf("I haven't seen %s around.", target))
+            irccon.Privmsg(channel, fmt.Sprintf("I haven't seen %s around.", target))
             return
         } else if err != nil {
             log.Printf("DB error in seenHandler: %v", err)
-            irccon.Privmsg(e.Arguments[0], "Error looking up user.")
+            irccon.Privmsg(channel, "Error looking up user.")
             return
         }
 
-        irccon.Privmsg(e.Arguments[0], 
+        irccon.Privmsg(channel, 
             fmt.Sprintf("%s was last seen at %s saying: \"%s\"", 
                 target, 
                 lastSeen.Format("2006-01-02 15:04:05"), 
                 lastMessage))
+    }
+}
+
+func tellHandler(db *sql.DB) HandlerFunc {
+    return func(e *irc.Event, irccon *irc.Connection, args []string) {
+        if len(args) < 2 {
+            irccon.Privmsg(e.Arguments[0], "Usage: .tell <nickname> <message>")
+            return
+        }
+
+        recipient := args[0]
+        message := strings.Join(args[1:], " ")
+        sender := e.Nick
+        channel := e.Arguments[0]
+
+        // Check existing message count
+        var count int
+        err := db.QueryRow(`
+            SELECT COUNT(*) 
+            FROM tell_messages 
+            WHERE sender = ? AND recipient = ? AND channel = ? AND delivered = FALSE
+        `, sender, recipient, channel).Scan(&count)
+        
+        if err != nil {
+            log.Printf("DB error in tellHandler count: %v", err)
+            irccon.Privmsg(channel, "Error checking message count.")
+            return
+        }
+
+        if 5 <= count {
+            irccon.Privmsg(channel, 
+                fmt.Sprintf("%s: maximum .tell to %s already reached", sender, recipient))
+            return
+        }
+
+        // Insert new tell message
+        _, err = db.Exec(`
+            INSERT INTO tell_messages 
+            (sender, recipient, channel, message) 
+            VALUES (?, ?, ?, ?)
+        `, sender, recipient, channel, message)
+        
+        if err != nil {
+            log.Printf("DB error in tellHandler insert: %v", err)
+            irccon.Privmsg(channel, "Error saving your message.")
+            return
+        }
+
+        irccon.Privmsg(channel, 
+            fmt.Sprintf("%s: I'll pass your message on to %s.", sender, recipient))
     }
 }
 
@@ -139,9 +181,9 @@ func main() {
     // Command map
     commands := map[string]func(*irc.Event, *irc.Connection, []string) {
         "echo": echoHandler,
-        "help": helpHandler,
+        "help": helpHandler, // Also update this!
         "seen": seenHandler(db),
-        "test": testHandler(db),
+        "tell": tellHandler(db),
     }
 
     // Join channel on connect
@@ -161,16 +203,71 @@ func main() {
         }
 
         // Log user activity for .seen command
-        if strings.HasPrefix(e.Arguments[0], "#") {
-            _, err := db.Exec(`
-                INSERT INTO user_activity (nickname, channel, last_message, last_seen)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(nickname, channel) DO UPDATE SET
-                    last_message = excluded.last_message,
-                    last_seen = excluded.last_seen
-            `, e.Nick, e.Arguments[0], e.Message())
-            if err != nil {
-                log.Printf("Error updating user activity: %v", err)
+        _, err := db.Exec(`
+            INSERT INTO user_activity (nickname, channel, last_message, last_seen)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(nickname, channel) DO UPDATE SET
+                last_message = excluded.last_message,
+                last_seen = excluded.last_seen
+        `, e.Nick, e.Arguments[0], e.Message())
+        if err != nil {
+            log.Printf("Error updating user activity: %v", err)
+        }
+
+        // Check for pending tell messages
+        var messages []struct {
+            id        int
+            sender    string
+            message   string
+            createdAt time.Time
+        }
+
+        rows, err := db.Query(`
+            SELECT id, sender, message, created_at 
+            FROM tell_messages 
+            WHERE recipient = ? AND channel = ? AND delivered = FALSE
+        `, e.Nick, e.Arguments[0])
+        if err != nil {
+            log.Printf("Error querying tell messages: %v", err)
+        } else {
+            defer rows.Close()
+            
+            // Process rows and store in memory
+            for rows.Next() {
+                var msg struct {
+                    id        int
+                    sender    string
+                    message   string
+                    createdAt time.Time
+                }
+                if err := rows.Scan(&msg.id, &msg.sender, &msg.message, &msg.createdAt); err != nil {
+                    log.Printf("Error scanning tell message: %v", err)
+                    continue
+                }
+                messages = append(messages, msg)
+            }
+            rows.Close()
+
+            // Deliver messages and mark as delivered
+            for _, msg := range messages {
+                // Deliver the message
+                irccon.Privmsg(e.Arguments[0], 
+                    fmt.Sprintf("%s: \"%s\" ~ %s [%s]", 
+                        e.Nick, 
+                        msg.message, 
+                        msg.sender, 
+                        msg.createdAt.Format("2006-01-02 15:04")))
+                
+                // Mark as delivered
+                _, err = db.Exec(`
+                    UPDATE tell_messages 
+                    SET delivered = TRUE 
+                    WHERE id = ?
+                `, msg.id)
+                
+                if err != nil {
+                    log.Printf("Error marking message delivered: %v", err)
+                }
             }
         }
 
