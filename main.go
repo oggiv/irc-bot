@@ -53,7 +53,7 @@ func seenHandler(db *sql.DB) HandlerFunc {
             return
         }
 
-        target := args[0]
+        target := strings.ToLower(args[0])
         channel := e.Arguments[0]
         var lastMessage string
         var lastSeen time.Time
@@ -91,7 +91,7 @@ func tellHandler(db *sql.DB) HandlerFunc {
             return
         }
 
-        recipient := args[0]
+        recipient := strings.ToLower(args[0])
         message := strings.Join(args[1:], " ")
         sender := e.Nick
         channel := e.Arguments[0]
@@ -130,7 +130,7 @@ func tellHandler(db *sql.DB) HandlerFunc {
         }
 
         irccon.Privmsg(channel, 
-            fmt.Sprintf("%s: I'll pass your message on to %s.", sender, recipient))
+            fmt.Sprintf("%s: I'll pass your message on to %s.", sender, args[0]))
     }
 }
 
@@ -299,7 +299,7 @@ func main() {
             ON CONFLICT(nickname, channel) DO UPDATE SET
                 last_message = excluded.last_message,
                 last_seen = excluded.last_seen
-        `, e.Nick, eChannel, eMessage)
+        `, strings.ToLower(e.Nick), eChannel, eMessage)
         if err != nil {
             log.Printf("Error updating user activity: %v", err)
         }
@@ -326,7 +326,7 @@ func main() {
             SELECT id, sender, message, created_at 
             FROM tell_messages 
             WHERE recipient = ? AND channel = ? AND delivered = FALSE
-        `, e.Nick, eChannel)
+        `, strings.ToLower(e.Nick), eChannel)
         if err != nil {
             log.Printf("Error querying tell messages: %v", err)
         } else {
