@@ -29,6 +29,8 @@ const (
     SASLPath = "sasl.txt"
 
     DBPath = "bot-data.db"
+
+    timezoneLocation = "Europe/Paris"
 )
 
 // Handler functions for commands
@@ -48,7 +50,7 @@ func helpHandler(helpMsg *string) HandlerFunc {
     }
 }
 
-func seenHandler(db *sql.DB) HandlerFunc {
+func seenHandler(db *sql.DB, tz *time.Location) HandlerFunc {
     return func(e *irc.Event, irccon *irc.Connection, args []string) {
         if len(args) == 0 {
             irccon.Privmsg(e.Arguments[0], "Usage: .seen <nickname>")
@@ -81,7 +83,7 @@ func seenHandler(db *sql.DB) HandlerFunc {
         irccon.Privmsg(channel, 
             fmt.Sprintf("%s was last seen at %s saying: \"%s\"", 
                 target, 
-                lastSeen.Format("2006-01-02 15:04:05"), 
+                lastSeen.In(tz).Format("2006-01-02 15:04:05"), 
                 lastMessage))
     }
 }
@@ -254,6 +256,13 @@ func main() {
         setupSASL(irccon)
     }
 
+    // Timezone
+    timezone, err := time.LoadLocation(timezoneLocation)
+    if err != nil {
+        fmt.Printf("Error loading timezone: %s", err )
+        return
+    }
+
     // Database
     db := initDB(DBPath)
     defer db.Close()
@@ -265,7 +274,7 @@ func main() {
     commands := map[string]func(*irc.Event, *irc.Connection, []string) {
         "echo": echoHandler,
         "help": helpHandler(&helpMsg),
-        "seen": seenHandler(db),
+        "seen": seenHandler(db, timezone),
         "tell": tellHandler(db),
     }
 
@@ -332,6 +341,7 @@ func main() {
         }
 
         // Check for pending tell messages
+        // !!! todo: the msg struct should be a type and messages should be a list of that type
         var messages []struct {
             id        int
             sender    string
@@ -373,7 +383,7 @@ func main() {
                         e.Nick, 
                         msg.message, 
                         msg.sender, 
-                        msg.createdAt.Format("2006-01-02 15:04")))
+                        msg.createdAt.In(timezone).Format("2006-01-02 15:04")))
                 
                 // Mark as delivered
                 _, err = db.Exec(`
@@ -408,9 +418,9 @@ func main() {
         }
     })
 
-    err := irccon.Connect(servername + ":" + serverport)
+    err = irccon.Connect(servername + ":" + serverport)
     if err != nil {
-        fmt.Printf("Err %s", err )
+        fmt.Printf("Error connecting to the irc server: %s", err )
         return
     }
     irccon.Loop()
