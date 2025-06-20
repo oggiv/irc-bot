@@ -7,6 +7,7 @@ import (
     "fmt"
     "log"
     "os"
+    "sort"
     "strings"
     "time"
     _ "github.com/mattn/go-sqlite3"
@@ -41,9 +42,10 @@ func echoHandler(e *irc.Event, irccon *irc.Connection, args []string) {
     irccon.Privmsg(e.Arguments[0], fmt.Sprintf("%s said: %s", e.Nick, strings.Join(args, " ")))
 }
 
-func helpHandler(e *irc.Event, irccon *irc.Connection, args []string) {
-    helpMsg := "Available commands: .echo, .help, .seen, .tell"
-    irccon.Privmsg(e.Arguments[0], helpMsg)
+func helpHandler(helpMsg *string) HandlerFunc {
+    return func (e *irc.Event, irccon *irc.Connection, args []string) {
+        irccon.Privmsg(e.Arguments[0], *helpMsg)
+    }
 }
 
 func seenHandler(db *sql.DB) HandlerFunc {
@@ -256,13 +258,28 @@ func main() {
     db := initDB(DBPath)
     defer db.Close()
 
+    // Declare helpMsg
+    var helpMsg string
+
     // Command map
     commands := map[string]func(*irc.Event, *irc.Connection, []string) {
         "echo": echoHandler,
-        "help": helpHandler, // Also update this!
+        "help": helpHandler(&helpMsg),
         "seen": seenHandler(db),
         "tell": tellHandler(db),
     }
+
+    // Create helpMsg from commands
+    commandList := make([]string, len(commands))
+    i := 0
+    for key := range commands {
+        commandList[i] = " " + prefix + key
+        i++
+    }
+
+    sort.Strings(commandList[:])
+
+    helpMsg = "Available commands:" + strings.Join(commandList[:], ",")
 
     // Join channel on connect
     irccon.AddCallback("001", func(e *irc.Event) {
