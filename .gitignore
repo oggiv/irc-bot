@@ -29,3 +29,6 @@ go.work.sum
 
 # SASL file
 sasl.txt
+
+# Executable output binary
+irc-bot

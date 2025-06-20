@@ -23,7 +23,7 @@ const (
     botident = "test-bot"
     prefix = "."
 
-    UseSASL = true
+    UseSASL = false // change
     SASLMech = "PLAIN"
     SASLPath = "sasl.txt"
 
