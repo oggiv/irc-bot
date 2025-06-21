@@ -100,6 +100,12 @@ func tellHandler(db *sql.DB) HandlerFunc {
         sender := e.Nick
         channel := e.Arguments[0]
 
+        // Don't allow tells to itself
+        if recipient == strings.ToLower(irccon.GetNick()) {
+            irccon.Privmsg(channel, "No need to tell me anything")
+            return
+        }
+
         // Check existing message count
         var count int
         err := db.QueryRow(`
@@ -398,18 +404,19 @@ func main() {
             }
         }
 
+        // Skip messages that don't begin with the bot prefix
         msg := strings.TrimSpace(eMessage)
         if !strings.HasPrefix(msg, prefix) {
-            // Skip messages that don't begin with the bot prefix
             return
         }
 
+        // Skip empty commands
         parts := strings.Fields(msg[len(prefix):])
         if len(parts) == 0 {
-            // Skip commands that are empty
             return
         }
 
+        // Match command with handler function
         cmd := strings.ToLower(parts[0])
         args := parts[1:]
 
